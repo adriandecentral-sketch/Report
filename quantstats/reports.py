@@ -175,6 +175,18 @@ def _match_dates(returns, benchmark):
     return returns, benchmark
 
 
+_DEFAULT_DROP_METRICS = [
+    "3Y (ann.)", "5Y (ann.)", "10Y (ann.)", "All-time (ann.)",
+    "6M", "1Y",
+    "Win Quarter", "Win Year",
+    "Best Year", "Worst Year",
+    "Gain/Pain (1M)",
+    "Smart Sharpe", "Smart Sortino", "Sortino/\u221a2", "Smart Sortino/\u221a2",
+    "Ulcer Performance Index", "Ulcer Index", "Serenity Index",
+    "Expected Monthly", "Expected Yearly",
+]
+
+
 def html(
     returns,
     benchmark=None,
@@ -188,6 +200,7 @@ def html(
     figfmt="svg",
     template_path=None,
     match_dates=True,
+    drop_metrics=None,
     **kwargs,
 ):
     """
@@ -322,37 +335,15 @@ def html(
         benchmark_original = None
 
     # Format date range for display in template
-    date_range = returns.index.strftime("%e %b, %Y")
-    tpl = tpl.replace("{{date_range}}", date_range[0] + " - " + date_range[-1])
+    date_range = returns.index.strftime("%Y-%m-%d")
+    date_range_str = date_range[0] + " \u2014 " + date_range[-1]
+    tpl = tpl.replace("{{date_range}}", date_range_str)
 
-    # Build title with compounding indicator (only show if compounded)
-    full_title = f"{title} (Compounded)" if compounded else title
-    tpl = tpl.replace("{{title}}", full_title)
-    tpl = tpl.replace("{{v}}", __version__)
-
-    # Build parameters string for subtitle
-    params_parts = []
-
-    # Add user-provided parameters first if present
-    user_params = kwargs.get("parameters", {})
-    if user_params:
-        for key, value in user_params.items():
-            params_parts.append(f"{key}: {value}")
-
-    # Add auto-detected parameters (always show key params)
-    if benchmark_title:
-        params_parts.append(f"Benchmark: {benchmark_title.upper()}")
-    params_parts.append(f"Periods/Year: {periods_per_year}")
-    params_parts.append(f"RF: {rf:.1%}")
-
-    params_str = " &bull; ".join(params_parts)
-    if params_str:
-        params_str += " | "
-    tpl = tpl.replace("{{params}}", params_str)
-
-    # Add matched dates indicator
-    matched_dates_str = " (matched dates)" if match_dates and benchmark is not None else ""
-    tpl = tpl.replace("{{matched_dates}}", matched_dates_str)
+    # Report heading/subheading (customizable via kwargs)
+    report_heading = kwargs.get("report_heading", title)
+    report_subheading = kwargs.get("report_subheading", "")
+    tpl = tpl.replace("{{report_heading}}", report_heading)
+    tpl = tpl.replace("{{report_subheading}}", report_subheading)
 
     # Set names for data series to be used in charts and tables
     if benchmark is not None:
@@ -377,6 +368,11 @@ def html(
         benchmark_title=benchmark_title,
         strategy_title=strategy_title,
     )[2:]
+
+    # Drop unwanted metric rows before rendering
+    _drop = drop_metrics if drop_metrics is not None else _DEFAULT_DROP_METRICS
+    if _drop:
+        mtrx = mtrx[~mtrx.index.isin(_drop)]
 
     # Format metrics table for HTML display
     mtrx.index.name = "Metric"
@@ -420,16 +416,11 @@ def html(
         tpl = tpl.replace("{{eoy_table}}", _html_table(yoy))
     else:
         # Generate EOY returns table without benchmark comparison
-        # pct multiplier
         yoy = _pd.DataFrame(_get_utils().group_returns(returns, returns.index.year) * 100)
         if isinstance(returns, _pd.Series):
             yoy.columns = ["Return"]
-            yoy["Cumulative"] = _get_utils().group_returns(returns, returns.index.year, True) * 100
-            # Don't add "%" here - the CSS in report.html handles it via :after pseudo-element
-            # Adding "%" in Python causes double "%" display (bug #475)
+            yoy["Cumulative"] = yoy["Return"].cumsum()
         elif isinstance(returns, _pd.DataFrame):
-            # Don't show cumulative for multiple strategy portfolios
-            # just show compounded like when we have a benchmark
             yoy.columns = list(_pd.core.common.flatten(strategy_title))
 
         yoy.index.name = "Year"
@@ -586,51 +577,52 @@ def html(
         )
         tpl = tpl.replace("{{rolling_beta}}", _embed_figure(figfile, figfmt))
 
-    # Rolling volatility analysis
-    figfile = _get_utils()._file_stream()
-    _get_plots().rolling_volatility(
-        returns,
-        benchmark,
-        grayscale=grayscale,
-        figsize=(8, 3),
-        subtitle=False,
-        savefig={"fname": figfile, "format": figfmt},
-        show=False,
-        ylabel="",
-        period=win_half_year,
-        periods_per_year=win_year,
-    )
-    tpl = tpl.replace("{{rolling_vol}}", _embed_figure(figfile, figfmt))
+    # Skip rolling charts when data is too short (< 6 months)
+    _enough_data = len(returns) >= win_half_year
 
-    # Rolling Sharpe ratio analysis
-    figfile = _get_utils()._file_stream()
-    _get_plots().rolling_sharpe(
-        returns,
-        grayscale=grayscale,
-        figsize=(8, 3),
-        subtitle=False,
-        savefig={"fname": figfile, "format": figfmt},
-        show=False,
-        ylabel="",
-        period=win_half_year,
-        periods_per_year=win_year,
-    )
-    tpl = tpl.replace("{{rolling_sharpe}}", _embed_figure(figfile, figfmt))
+    if _enough_data:
+        figfile = _get_utils()._file_stream()
+        _get_plots().rolling_volatility(
+            returns,
+            benchmark,
+            grayscale=grayscale,
+            figsize=(8, 3),
+            subtitle=False,
+            savefig={"fname": figfile, "format": figfmt},
+            show=False,
+            ylabel="",
+            period=win_half_year,
+            periods_per_year=win_year,
+        )
+        tpl = tpl.replace("{{rolling_vol}}", _embed_figure(figfile, figfmt))
 
-    # Rolling Sortino ratio analysis
-    figfile = _get_utils()._file_stream()
-    _get_plots().rolling_sortino(
-        returns,
-        grayscale=grayscale,
-        figsize=(8, 3),
-        subtitle=False,
-        savefig={"fname": figfile, "format": figfmt},
-        show=False,
-        ylabel="",
-        period=win_half_year,
-        periods_per_year=win_year,
-    )
-    tpl = tpl.replace("{{rolling_sortino}}", _embed_figure(figfile, figfmt))
+        figfile = _get_utils()._file_stream()
+        _get_plots().rolling_sharpe(
+            returns,
+            grayscale=grayscale,
+            figsize=(8, 3),
+            subtitle=False,
+            savefig={"fname": figfile, "format": figfmt},
+            show=False,
+            ylabel="",
+            period=win_half_year,
+            periods_per_year=win_year,
+        )
+        tpl = tpl.replace("{{rolling_sharpe}}", _embed_figure(figfile, figfmt))
+
+        figfile = _get_utils()._file_stream()
+        _get_plots().rolling_sortino(
+            returns,
+            grayscale=grayscale,
+            figsize=(8, 3),
+            subtitle=False,
+            savefig={"fname": figfile, "format": figfmt},
+            show=False,
+            ylabel="",
+            period=win_half_year,
+            periods_per_year=win_year,
+        )
+        tpl = tpl.replace("{{rolling_sortino}}", _embed_figure(figfile, figfmt))
 
     # Drawdown periods analysis
     figfile = _get_utils()._file_stream()
