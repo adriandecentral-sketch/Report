@@ -90,18 +90,21 @@ def _patch_html(html_path: Path, ann_simple_pct: float, calmar: float) -> None:
     with open(html_path, encoding="utf-8") as f:
         html = f.read()
 
-    # 1. Rename the CAGR label cell
-    html = html.replace("CAGR﹪%", "Ann. Simple Return %")
+    # 1. Rename the CAGR label cell.
+    #    QS key is "CAGR﹪%" but the HTML template strips the trailing regular "%" from
+    #    the label, rendering only the Unicode small-percent sign (U+FE6A = ﹪).
+    #    Verified from hex dump: <td>CAGR\ufe6a</td>
+    html = html.replace("CAGR\ufe6a", "Ann. Simple Return %")
 
-    # 2. Replace the value cell that immediately follows the (now-renamed) label.
-    #    Pattern matches the label cell, optional whitespace, then the value cell.
+    # 2. Replace the value in the cell that immediately follows the renamed label.
+    #    The value cell contains the formatted string e.g. "219.37%" (% included).
     html = re.sub(
         r'(<td[^>]*>\s*Ann\. Simple Return %\s*</td>\s*<td[^>]*>)[^<]*(</td>)',
-        rf'\g<1>{ann_simple_pct:.2f}\g<2>',
+        rf'\g<1>{ann_simple_pct:.2f}%\g<2>',
         html,
     )
 
-    # 3. Replace the Calmar value cell that follows the Calmar label cell.
+    # 3. Replace the Calmar value cell (value has no %, it's a ratio).
     html = re.sub(
         r'(<td[^>]*>\s*Calmar\s*</td>\s*<td[^>]*>)[^<]*(</td>)',
         rf'\g<1>{calmar:.2f}\g<2>',
