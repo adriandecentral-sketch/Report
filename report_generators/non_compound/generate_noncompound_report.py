@@ -115,6 +115,53 @@ def _patch_html(html_path: Path, ann_simple_pct: float, calmar: float) -> None:
         f.write(html)
 
 
+def _html_to_pdf_via_screenshot(html_path: Path, pdf_path: Path) -> None:
+    """Render HTML to a full-page PNG via Playwright, then paginate into PDF.
+
+    Playwright's native PDF renderer applies print CSS which reflows the QS
+    HTML layout. Taking a screenshot at screen-media viewport and converting
+    to PDF via Pillow preserves the exact browser rendering.
+    """
+    from playwright.sync_api import sync_playwright
+    from PIL import Image
+    import io
+
+    png_buf = io.BytesIO()
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page(viewport={"width": 1400, "height": 900})
+        page.emulate_media(media="screen")
+        page.goto(f"file:///{html_path.resolve()}")
+        page.wait_for_load_state("networkidle")
+        page.wait_for_timeout(2000)
+        screenshot = page.screenshot(full_page=True)
+        browser.close()
+
+    img = Image.open(io.BytesIO(screenshot)).convert("RGB")
+    img_w, img_h = img.size
+
+    # Target A4 landscape at 150 DPI: 1748 × 1240 px
+    a4_w, a4_h = 1748, 1240
+    scale = a4_w / img_w
+    scaled_h = int(img_h * scale)
+    img_scaled = img.resize((a4_w, scaled_h), Image.LANCZOS)
+
+    pages: list[Image.Image] = []
+    for top in range(0, scaled_h, a4_h):
+        page_canvas = Image.new("RGB", (a4_w, a4_h), "white")
+        crop = img_scaled.crop((0, top, a4_w, min(top + a4_h, scaled_h)))
+        page_canvas.paste(crop, (0, 0))
+        pages.append(page_canvas)
+
+    pages[0].save(
+        str(pdf_path),
+        save_all=True,
+        append_images=pages[1:],
+        resolution=150.0,
+    )
+
+
 def main() -> None:
     daily_pnl, cap, period_start, period_end = _load_cache()
 
@@ -169,6 +216,15 @@ def main() -> None:
     _patch_html(output_path, ann_simple_pct, calmar_correct)
 
     print(f"Report saved to : {output_path}")
+
+    # ------------------------------------------------------------------ #
+    # PDF via full-page screenshot (not Playwright's native PDF renderer) #
+    # Playwright's print-CSS reflows QS HTML; screenshot preserves the    #
+    # exact browser layout.                                               #
+    # ------------------------------------------------------------------ #
+    pdf_path = output_path.with_suffix(".pdf")
+    _html_to_pdf_via_screenshot(output_path, pdf_path)
+    print(f"PDF saved to    : {pdf_path}")
 
 
 if __name__ == "__main__":
