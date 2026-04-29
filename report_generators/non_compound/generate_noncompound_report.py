@@ -79,27 +79,37 @@ def _patch_html(html_path: Path, ann_simple_pct: float, calmar: float) -> None:
     regardless of the compounded flag. This post-processing corrects both to the
     definitions appropriate for a fixed-capital account:
       Ann. Simple Return % = total_simple_return × (252 / n_trade_days) × 100
-      Calmar              = Ann. Simple Return / MaxDD% of initial capital
+      Calmar               = Ann. Simple Return / MaxDD% of initial capital
+
+    Uses regex string replacement (not BeautifulSoup) so the original HTML is
+    preserved byte-for-byte except for the two patched cells — avoiding any
+    layout/CSS degradation from full HTML re-serialisation.
     """
-    from bs4 import BeautifulSoup
+    import re
 
     with open(html_path, encoding="utf-8") as f:
-        soup = BeautifulSoup(f.read(), "html.parser")
+        html = f.read()
 
-    for td in soup.find_all("td"):
-        text = (td.string or "").strip()
-        if "CAGR" in text:
-            td.string = "Ann. Simple Return %"
-            sib = td.find_next_sibling("td")
-            if sib:
-                sib.string = f"{ann_simple_pct:.2f}"
-        elif text == "Calmar":
-            sib = td.find_next_sibling("td")
-            if sib:
-                sib.string = f"{calmar:.2f}"
+    # 1. Rename the CAGR label cell
+    html = html.replace("CAGR﹪%", "Ann. Simple Return %")
+
+    # 2. Replace the value cell that immediately follows the (now-renamed) label.
+    #    Pattern matches the label cell, optional whitespace, then the value cell.
+    html = re.sub(
+        r'(<td[^>]*>\s*Ann\. Simple Return %\s*</td>\s*<td[^>]*>)[^<]*(</td>)',
+        rf'\g<1>{ann_simple_pct:.2f}\g<2>',
+        html,
+    )
+
+    # 3. Replace the Calmar value cell that follows the Calmar label cell.
+    html = re.sub(
+        r'(<td[^>]*>\s*Calmar\s*</td>\s*<td[^>]*>)[^<]*(</td>)',
+        rf'\g<1>{calmar:.2f}\g<2>',
+        html,
+    )
 
     with open(html_path, "w", encoding="utf-8") as f:
-        f.write(str(soup))
+        f.write(html)
 
 
 def main() -> None:
